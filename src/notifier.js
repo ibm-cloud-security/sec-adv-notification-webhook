@@ -1,9 +1,9 @@
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 var log4js = require("log4js");
-var logger = log4js.getLogger();
+const date = require('date-and-time');
+var logger = log4js.getLogger('security-advisor-notification-webhook');
 logger.level = "info";
-const request = require("request");
 
 const webhookInternalErrorResponse = { err: "WebHook Internal Error." };
 
@@ -29,9 +29,8 @@ async function downloadPublicKey(accessToken, accountId, params) {
       }
     };
 
-    const url = `${
-      params.notificationChannelUrl
-    }/v1/${accountId}/notifications/public_key`;
+    const url = `${params.notificationChannelUrl
+      }/v1/${accountId}/notifications/public_key`;
     const response = await axios.get(url, config);
     logger.info(`Downloaded public key for account ${accountId}`);
     return response.data.publicKey;
@@ -45,6 +44,91 @@ async function downloadPublicKey(accessToken, accountId, params) {
   }
 }
 
+async function sendToLogDNA(finding, params) {
+  try {
+    const basicAuth = Buffer.from(`${params.logDNAIngestionKey}:`).toString('base64')
+    const config = {
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Basic ${basicAuth}`
+      }
+    };
+    const body = {
+      "lines": [
+        {
+          "timestamp": date.format(new Date(), 'YYYY-MM-DDTHH:mm:ss.SSZ', true),
+          "line": JSON.stringify(finding),
+          "app": "cloud function",
+          "level": "INFO",
+          "meta": {
+            "labels": "IBM Security Advisor"
+          }
+        }
+      ]
+    }
+    const url = `${params.logDNAEndpoint}/logs/ingest?hostname=security-advisor-notification-webhook&tags=security-advisor&now=${Date.now()}`
+
+    await axios.post(url, body, config);
+  } catch (err) {
+    logger.error(
+      `Error while sending finding ${finding["id"]
+      } to logDNA : ${err}`
+    );
+    throw err;
+  }
+}
+
+async function sendToEventstream(finding, params) {
+  const { Kafka } = require('kafkajs');
+  const topic = params.kafkaTopic;
+  const brokers = params.kafkaMetadataBrokerList.split(',')
+  const kafka = new Kafka({
+    clientId: 'security-advisor-notification-webhook',
+    kafka_topic: topic,
+    brokers: brokers,
+    sasl: {
+      mechanism: 'plain',
+      username: params.kafkaSaslUsername,
+      password: params.kafkaSaslPassword
+    },
+    ssl: true,
+    connectionTimeout: 3000,
+    authenticationTimeout: 1000,
+    reauthenticationThreshold: 10000,
+  });
+  // 2.Creating Kafka Producer
+  const producer = kafka.producer();
+  const runProducer = async () => {
+    // 3.Connecting producer to kafka broker.
+    try {
+      await producer.connect()
+      await producer.send({
+        topic: topic,
+        messages:
+          [{ value: JSON.stringify(finding) }],
+      })
+      await producer.disconnect()
+    } catch (err) {
+      logger.error(
+        `Error while sending finding ${finding["id"]
+        } to Eventstream : ${err}`
+      );
+      throw err;
+    }
+  }
+  try {
+    await runProducer()
+    logger.info(`Finding ${finding["id"]} is published to '${topic}'`);
+  } catch (err) {
+    logger.error(
+      `Error while sending finding ${finding["id"]
+      } to Eventstream : ${err}`
+    );
+    throw err;
+  }
+}
+
 async function createGitHubIssue(finding, params) {
   try {
     var issueDesc = `**Source**: ${finding["payload"]["reported_by"]["title"]}\n`;
@@ -52,9 +136,8 @@ async function createGitHubIssue(finding, params) {
     issueDesc = issueDesc + `**Severity**: ${finding["severity"]}\n`;
     issueDesc = issueDesc + `[View in Security Advisor Dashboard](${finding["issuer-url"]})\n`;
     var body = {
-      title: `${
-        finding["severity"]
-      } severity finding reported by IBM Security Advisor`,
+      title: `${finding["severity"]
+        } severity finding reported by IBM Security Advisor`,
       body: issueDesc,
       labels: ["IBM Security Advisor"]
     };
@@ -70,8 +153,7 @@ async function createGitHubIssue(finding, params) {
     const response = await axios.post(params.GITHUB_API_URL, body, config);
   } catch (err) {
     logger.error(
-      `Error while creating GitHub issue for finding ${
-        finding["id"]
+      `Error while creating GitHub issue for finding ${finding["id"]
       }: ${JSON.stringify(err)}`
     );
     throw err;
@@ -89,7 +171,7 @@ async function sendToSlack(finding, params) {
       attachments: [
         {
           color: "#FFD300",
-          text:   "```" + messageDesc + "```",
+          text: "```" + messageDesc + "```",
           mrkdwn_in: ["text"],
           actions: [
             {
@@ -172,7 +254,7 @@ async function main(params) {
       );
       await sendToSlack(finding, params);
     } catch (err) {
-      logger.error(`Slack error : JSON.stringify(err)`);
+      logger.error(`Slack error : ${JSON.stringify(err)}`);
       return { err: "Couldn't notify slack" };
     }
   } else if (severity === "high" || severity === "medium") {
@@ -186,6 +268,36 @@ async function main(params) {
     } catch (err) {
       logger.error(`Github error : ${JSON.stringify(err)}`);
       return { err: "Couldn't create github issue" };
+    }
+  }
+
+  if (params.sendToLogDNA === "True") {
+    try {
+      logger.info(
+        `Received a finding ${finding["id"]}. Sending to logDNA.`
+      );
+      await sendToLogDNA(finding, params);
+      logger.info(
+        `Successfully send finding ${finding["id"]} to logDNA.`
+      );
+    } catch (err) {
+      logger.error(`logDNA error : ${err}`);
+      return { err: "Couldn't send to logDNA" };
+    }
+  }
+
+  if (params.sendToEventstream === "True") {
+    try {
+      logger.info(
+        `Received a finding ${finding["id"]}. Sending to Event stream.`
+      );
+      await sendToEventstream(finding, params);
+      logger.info(
+          `Successfully send finding ${finding["id"]} to Event stream.`
+      );
+    } catch (err) {
+      logger.error(`Eventstream error : ${err}`);
+      return { err: "Couldn't send to Eventstream" };
     }
   }
 }

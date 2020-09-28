@@ -17,6 +17,12 @@ If the finding received as part of notification signifies MEDIUM/HIGH severity, 
 **sendToSlack**: 
 If the finding received as part of notification signifies LOW severity, then this particular function will be called to send a Slack alert. This function builds message with necessary information (example: findings id, source etc) and post it to given Slack channel. Before we begin sent Slack alert, we will need a slack channel and a webhook url for the same. For more information, see this [link](https://api.slack.com/incoming-webhooks#create_a_webhook)
 
+**sendToEventstream**:
+All the findings that are received as part of this notification webhook will be put into a configured event stream (kafka) topic. This function will act as kafka producer.
+
+**sendToLogDNA**:
+All the findings that are received as part of this notification webhook will be send to a configured logDNA instance.
+
 **main**:
 IBM Cloud Functions requires a function called main to exist as an entry point for the action. The params object contains the body of the incoming request. Security Advisor notification body contains a single JSON object with a single property called **data** that holds the signed JWT string as its value.
 When we obtained the public key, we can use it to verify the JWT signature. We’ll use the jsonwebtoken library’s verify function. This function receives the JWT string and a public key and returns the payload decoded if the signature is valid. If not, it will throw an error.
@@ -45,17 +51,17 @@ When we obtained the public key, we can use it to verify the JWT signature. We�
    - **slackChannel** : Slack channel name
    - **GITHUB_ACCESS_TOKEN** : Developer access token generated using GitHub
    - **GITHUB_API_URL** : GitHub API url for your repo
+   - **sendTologDNA** : True/False, If set to True will send the finding to configured logDNA instance.
+   - **logDNAEndpoint** : logDNA ingestion endpoint, example: https://logs.us-south.logging.cloud.ibm.com
+   - **logDNAIngestionKey** : logDNA ingestion key from logDNA instance UI.
+   - **sendToEventstream** : True/False, If set to True will send the finding to configured Eventstream instance.
+   - **kafkaMetadataBrokerList** : Kafka metadata broker list from Event stream instance service credentials.
+   - **kafkaSaslUsername** : Kafka user name from Event stream instance service credentials
+   - **kafkaSaslPassword** : kafka user password from Event stream instance service credentials
+   - **kafkaTopic** : Kafka topic name
+
 7. Bind parameters to your action.   
    - `ibmcloud fn action update security-advisor-notifier --param-file params.json`
    - Verify using `ibmcloud fn action get security-advisor-notifier parameters`
 8. Get the URL endpoint for your action.
    - ```echo `ibmcloud fn action get security-advisor-notifier --url | grep 'https'`'.json'```
-
-
- ## Create Cloud function action using UI
-
- 1. To create a Cloud Function, go to the Functions from left nav bar in [IBM Cloud Dashboard](https://cloud.ibm.com/), select the Actions tab, click the Create button, and then click Create a new action. Give the action a name, chose the default package, select a Node.js runtime (the sample code in this repo `src/notifier.js` is compatible with Node.js 8), and click the Create button.
- 2. Copy the code from `src/notifier.js` to your Cloud Function.
- 3. Add required parameters mentioned in `params.json` by clicking `Parameters` from the left nav of the Cloud Functions UI.
- 4. Select `Endpoints` from the left nav of the Cloud Functions UI, check the Enable as Web Function checkbox, and click the Save button. Copy the URL that was added at the bottom of the Web Action section.
-  
