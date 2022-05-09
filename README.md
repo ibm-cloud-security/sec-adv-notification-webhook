@@ -1,3 +1,5 @@
+# DEPRECATED
+
 # Security Advisor Notification Receiver
 
 In this repo we will be making use of [Cloud Function](https://cloud.ibm.com/docs/openwhisk/index.html#index) to create a notification receiver for Security Advisor Notification service.
